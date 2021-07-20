@@ -2,13 +2,13 @@
 
 buildPythonPackage rec {
   pname = "libvirt";
-  version = "7.0.0";
+  version = "7.5.0";
 
   src = assert version == libvirt.version; fetchFromGitLab {
     owner = "libvirt";
     repo = "libvirt-python";
     rev = "v${version}";
-    sha256 = "0vdvpqiypxis8wny7q39qps050zi13l66pnpa47040q6bar0d4xw";
+    sha256 = "sha256-PQq5TzTy5nQLFPErR7kRABDf3m+my/YTQGUyRz/B3DU=";
   };
 
   nativeBuildInputs = [ pkg-config ];
