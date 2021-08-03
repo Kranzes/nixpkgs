@@ -50,6 +50,7 @@ in stdenv.mkDerivation rec {
 
   patches = [
     ./0001-meson-patch-in-an-install-prefix-for-building-on-nix.patch
+    ./0002-meson-patch-ch-install-prefix.patch
   ];
 
   nativeBuildInputs = [
