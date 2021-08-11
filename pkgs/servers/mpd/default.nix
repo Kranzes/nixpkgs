@@ -11,7 +11,7 @@
 # Filters
 , libsamplerate
 # Outputs
-, alsa-lib, libjack2, libpulseaudio, libshout
+, alsa-lib, libjack2, libpulseaudio, libshout, pipewire
 # Misc
 , icu, sqlite, avahi, dbus, pcre, libgcrypt, expat
 # Services
@@ -67,6 +67,7 @@ let
     jack          = [ libjack2 ];
     pulse         = [ libpulseaudio ];
     shout         = [ libshout ];
+    pipewire      = [ pipewire ];
     # Commercial services
     qobuz         = [ curl libgcrypt yajl ];
     soundcloud    = [ curl yajl ];
