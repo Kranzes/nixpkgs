@@ -23892,8 +23892,6 @@ with pkgs;
 
   gomodifytags = callPackage ../development/tools/gomodifytags { };
 
-  go-langserver = callPackage ../development/tools/go-langserver { };
-
   gopls = callPackage ../development/tools/gopls {
     buildGoModule = buildGo118Module;
   };
