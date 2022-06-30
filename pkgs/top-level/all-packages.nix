@@ -2584,8 +2584,6 @@ with pkgs;
     buildGoModule = buildGo118Module;
   };
 
-  gosca = callPackage ../development/tools/gosca { };
-
   gosh = callPackage ../tools/security/gosh { };
 
   gospider = callPackage ../tools/security/gospider { };
