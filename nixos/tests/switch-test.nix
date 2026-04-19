@@ -500,6 +500,29 @@ in
             };
           };
 
+          # A service that is not socket-activated yet. Used to verify the
+          # transition to socket activation.
+          pre-socket-activation.configuration = {
+            systemd.services.socket-activated = {
+              description = "A service about to gain socket activation";
+              stopIfChanged = true;
+              wantedBy = [ "multi-user.target" ];
+              serviceConfig = {
+                ExecStart = socketTest;
+                ExecReload = "${pkgs.coreutils}/bin/true";
+                Environment = "MODE=direct";
+              };
+            };
+          };
+
+          # The same service, now socket-activated, matching the shape of
+          # simple-socket-stop-if-changed but with a differing service unit
+          # so the switch actually detects a modified service.
+          post-socket-activation.configuration = {
+            imports = [ simple-socket-stop-if-changed.configuration ];
+            systemd.services.socket-activated.serviceConfig.Environment = "MODE=socket";
+          };
+
           mount.configuration = {
             systemd.mounts = [
               {
@@ -1447,6 +1470,25 @@ in
           # Socket-activation of the unit still works
           if machine.succeed("socat - UNIX-CONNECT:/run/test.sock") != "hello":
               raise Exception("Socket was not properly activated after the service was restarted")
+
+          # Transition from a non-socket-activated service to a socket-activated
+          # one must stop the running service and start the new socket, without
+          # starting the service directly. Starting the service directly would
+          # either fail (no socket FDs) or make the socket refuse to start
+          # because the service is already active.
+          machine.succeed("rm -f /run/test.sock")
+          out = switch_to_specialisation("${machine}", "pre-socket-activation")
+          machine.succeed("systemctl is-active socket-activated.service")
+          machine.fail("systemctl is-active socket-activated.socket")
+          out = switch_to_specialisation("${machine}", "post-socket-activation")
+          assert_contains(out, "stopping the following units: socket-activated.service\n")
+          assert_contains(out, "\nstarting the following units: socket-activated.socket\n")
+          assert_lacks(out, "socket-activated.service already active, refusing")
+          machine.succeed("[ -S /run/test.sock ]")
+          # The service is only started on demand through the socket
+          machine.fail("systemctl is-active socket-activated.service")
+          if machine.succeed("socat - UNIX-CONNECT:/run/test.sock") != "hello":
+              raise Exception("Socket was not properly activated after transition to socket activation")
 
       with subtest("mounts"):
           switch_to_specialisation("${machine}", "mount")

@@ -663,6 +663,9 @@ fn handle_modified_unit(
                     }
 
                     for socket in &sockets {
+                        let socket_in_new_config =
+                            toplevel.join("etc/systemd/system").join(socket).exists();
+
                         if active_cur.contains_key(socket) {
                             // We can now be sure this is a socket-activated unit
 
@@ -673,7 +676,7 @@ fn handle_modified_unit(
                             }
 
                             // Only restart sockets that actually exist in new configuration:
-                            if toplevel.join("etc/systemd/system").join(socket).exists() {
+                            if socket_in_new_config {
                                 if use_restart_as_stop_and_start {
                                     units_to_restart.insert(socket.to_string(), ());
                                     record_unit(RESTART_LIST_FILE, socket);
@@ -684,6 +687,28 @@ fn handle_modified_unit(
 
                                 socket_activated = true;
                             }
+
+                            // Remove from units to reload so we don't restart and reload
+                            if units_to_reload.contains_key(unit) {
+                                units_to_reload.remove(unit);
+                                unrecord_unit(RELOAD_LIST_FILE, unit);
+                            }
+                        } else if socket_in_new_config {
+                            // The socket is new in the configuration and the service is
+                            // transitioning to socket activation. Start the socket so it can
+                            // activate the service on demand; don't start the service directly,
+                            // because systemd would refuse to bind the socket while the service
+                            // is still active, and the service itself may now depend on receiving
+                            // socket file descriptors.
+                            if use_restart_as_stop_and_start {
+                                units_to_restart.insert(socket.to_string(), ());
+                                record_unit(RESTART_LIST_FILE, socket);
+                            } else {
+                                units_to_start.insert(socket.to_string(), ());
+                                record_unit(START_LIST_FILE, socket);
+                            }
+
+                            socket_activated = true;
 
                             // Remove from units to reload so we don't restart and reload
                             if units_to_reload.contains_key(unit) {
