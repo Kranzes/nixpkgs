@@ -97,7 +97,8 @@ stdenv.mkDerivation {
     installShellFiles
     removeReferencesTo
   ]
-  ++ nativeBuildInputs;
+  ++ nativeBuildInputs
+  ++ mapModules "nativeBuildInputs";
 
   buildInputs = [
     openssl
@@ -211,6 +212,11 @@ stdenv.mkDerivation {
   }
   // lib.optionalAttrs (stdenv.buildPlatform != stdenv.hostPlatform) {
     CONFIG_BIG_ENDIAN = if stdenv.hostPlatform.isBigEndian then "y" else "n";
+  }
+  // lib.optionalAttrs (mapModules "nativeBuildInputs" != [ ]) {
+    # Modules such as otel bring cmake, whose setup hook would replace
+    # nginx's own configurePhase.
+    dontUseCmakeConfigure = true;
   };
 
   configurePlatforms = [ ];
