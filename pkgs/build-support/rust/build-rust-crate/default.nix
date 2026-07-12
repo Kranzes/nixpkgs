@@ -19,6 +19,27 @@
   # May be overridden on a per-crate level.
   # See <https://doc.rust-lang.org/rustc/codegen-options/index.html#codegen-units>
   defaultCodegenUnits ? 1,
+  # Link-time optimization mode for all crates, mirroring Cargo's
+  # `profile.<name>.lto` setting.
+  # See <https://doc.rust-lang.org/cargo/reference/profiles.html#lto>.
+  #
+  # Cargo profiles apply to the whole dependency graph, so this is a
+  # graph-wide default (set it via `buildRustCrate.override`); it may be
+  # overridden per crate with the `lto` attribute. The rustc flags each
+  # crate receives depend on its crate type, just like in cargo: final
+  # artifacts (bins, staticlibs, cdylibs) run LTO with `-C lto[=...]`,
+  # rlib dependencies keep bitcode embedded for the downstream LTO link,
+  # and host artifacts (proc macros, build scripts) are built with
+  # `-C embed-bitcode=no` since they are never LTO'd.
+  #
+  #   null    - no LTO-related flags at all (legacy behavior)
+  #   false   - like Cargo's default: no cross-crate LTO, and skip
+  #             embedding bitcode (`-C embed-bitcode=no`)
+  #   true    - fat LTO across the dependency graph (`-C lto`)
+  #   "fat"   - same as true, but passed as `-C lto=fat`
+  #   "thin"  - thin LTO (`-C lto=thin`)
+  #   "off"   - disable LTO entirely, including rustc's thin-local LTO
+  defaultLto ? null,
 }:
 
 let
@@ -386,6 +407,7 @@ lib.makeOverridable
         "links"
         "capLints"
         "lints"
+        "lto"
       ];
       extraDerivationAttrs = removeAttrs crate processedAttrs;
       nativeBuildInputs_ = nativeBuildInputs;
@@ -419,6 +441,19 @@ lib.makeOverridable
           "forbid"
         else
           "allow";
+      resolvedLto =
+        let
+          value = crate.lto or defaultLto;
+        in
+        assert lib.assertMsg (lib.elem value [
+          null
+          false
+          true
+          "thin"
+          "fat"
+          "off"
+        ]) ''buildRustCrate (${crate.crateName}): `lto` must be null, a boolean, "thin", "fat" or "off"'';
+        value;
 
       # crate2nix has a hack for the old bash based build script that did split
       # entries at `,`. No we have to work around that hack.
@@ -596,6 +631,7 @@ lib.makeOverridable
             colors
             codegenUnits
             ;
+          lto = resolvedLto;
         };
         buildPhase = buildCrate {
           inherit
@@ -619,6 +655,7 @@ lib.makeOverridable
             capLints
             useClippy
             ;
+          lto = resolvedLto;
         };
         dontStrip = !release;
 

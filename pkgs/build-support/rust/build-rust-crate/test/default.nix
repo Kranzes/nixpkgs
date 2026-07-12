@@ -89,6 +89,21 @@ let
 
   mkLib = name: mkFile name "pub fn test() -> i32 { return 23; }";
 
+  # Bin plus rlib dependency built with the same `lto` value, the way a
+  # cargo profile applies to the whole dependency graph.
+  mkLtoCase = ltoVal: {
+    lto = ltoVal;
+    crateBin = [ { name = "lto-bin"; } ];
+    src = mkBinExtern "src/main.rs" "lto_dep";
+    dependencies = [
+      (mkHostCrate {
+        crateName = "lto-dep";
+        lto = ltoVal;
+        src = mkLib "src/lib.rs";
+      })
+    ];
+  };
+
   mkTest =
     crateArgs:
     let
@@ -903,6 +918,144 @@ rec {
             pub fn alive() {}
           '';
         };
+        # `lto` mirrors Cargo's `profile.<name>.lto`. One run test per
+        # accepted value; the per-crate-type flag selection is asserted
+        # in ltoFlagTable below.
+        ltoFat = mkLtoCase "fat";
+        ltoThin = mkLtoCase "thin";
+        ltoTrue = mkLtoCase true;
+        ltoFalse = mkLtoCase false;
+        ltoOff = mkLtoCase "off";
+        # A root with LTO enabled must be able to consume dependencies
+        # built without any `lto` setting: rustc embeds bitcode in rlibs
+        # by default, and the final `-C lto` link reads it.
+        ltoRootOnly = {
+          lto = "fat";
+          crateBin = [ { name = "lto-root-only"; } ];
+          src = mkBinExtern "src/main.rs" "plain_dep";
+          dependencies = [
+            (mkHostCrate {
+              crateName = "plain-dep";
+              src = mkLib "src/lib.rs";
+            })
+          ];
+        };
+        # Test harnesses are compiled as bin units, so `-C lto=thin` must
+        # be accepted alongside `--test`. That the flag really reaches the
+        # harness link is proven by ltoTestHarnessRunsLto below.
+        ltoLibTests = {
+          lto = "thin";
+          src = mkTestFile "src/lib.rs" "lto_harness";
+          buildTests = true;
+          expectedTestOutputs = [ "test lto_harness ... ok" ];
+        };
+        # A proc-macro crate's own test harness stays a host unit (cargo
+        # checks for_host before the test-mode bin mapping), so it must
+        # NOT run LTO: with a dependency whose bitcode was stripped
+        # (lto = false), bin-unit treatment would fail the fat-LTO link,
+        # while host treatment links normally.
+        ltoProcMacroTests =
+          let
+            dep = mkHostCrate {
+              crateName = "lto-pm-dep";
+              lto = false;
+              src = mkLib "src/lib.rs";
+            };
+          in
+          {
+            procMacro = true;
+            edition = "2018";
+            lto = "fat";
+            dependencies = [ dep ];
+            src = mkFile "src/lib.rs" ''
+              use proc_macro::TokenStream;
+
+              #[proc_macro]
+              pub fn shared_value(_input: TokenStream) -> TokenStream {
+                  lto_pm_dep::test().to_string().parse().unwrap()
+              }
+
+              #[cfg(test)]
+              #[test]
+              fn harness_is_host_unit() {
+                  assert_eq!(lto_pm_dep::test(), 23);
+              }
+            '';
+            buildTests = true;
+            expectedTestOutputs = [ "test harness_is_host_unit ... ok" ];
+          };
+        # The build script is a host unit: compiled with
+        # `-C embed-bitcode=no`, never LTO'd, and it must still be able to
+        # link a build dependency that was built with the LTO profile.
+        ltoBuildScript = {
+          lto = "thin";
+          crateBin = [ { name = "lto-build-script"; } ];
+          src = symlinkJoin {
+            name = "lto-build-script-src";
+            paths = [
+              (mkFile "src/main.rs" ''
+                fn main() { assert_eq!(env!("LTO_BS"), "ok"); }
+              '')
+              (mkFile "build.rs" ''
+                extern crate bsdep;
+                fn main() {
+                  assert_eq!(bsdep::test(), 23);
+                  println!("cargo:rustc-env=LTO_BS=ok");
+                }
+              '')
+            ];
+          };
+          buildDependencies = [
+            (mkCrate buildPackages.buildRustCrate {
+              crateName = "bsdep";
+              lto = "thin";
+              src = mkLib "src/lib.rs";
+            })
+          ];
+        };
+        # Shared rlib consumed by both a proc-macro dylib (a host link that
+        # needs the dependency's object code) and the fat-LTO final binary
+        # (which reads its bitcode) — the same store path must serve both.
+        ltoProcMacro =
+          let
+            sharedDep = mkHostCrate {
+              crateName = "lto-shared";
+              lto = "fat";
+              src = mkLib "src/lib.rs";
+            };
+            macroCrate = mkHostCrate {
+              crateName = "lto-macro";
+              procMacro = true;
+              edition = "2018";
+              lto = "fat";
+              dependencies = [ sharedDep ];
+              src = mkFile "src/lib.rs" ''
+                use proc_macro::TokenStream;
+                #[proc_macro]
+                pub fn shared_value(_input: TokenStream) -> TokenStream {
+                    format!("fn shared_value() -> i32 {{ {} }}", lto_shared::test())
+                        .parse()
+                        .unwrap()
+                }
+              '';
+            };
+          in
+          {
+            lto = "fat";
+            edition = "2018";
+            crateBin = [ { name = "lto-macro-bin"; } ];
+            dependencies = [
+              macroCrate
+              sharedDep
+            ];
+            src = mkFile "src/main.rs" ''
+              lto_macro::shared_value!();
+              fn main() {
+                assert_eq!(shared_value(), 23);
+                assert_eq!(lto_shared::test(), 23);
+              }
+            '';
+          };
       };
       brotliCrates = (callPackage ./brotli-crates.nix { });
       rcgenCrates = callPackage ./rcgen-crates.nix {
@@ -1297,6 +1450,235 @@ rec {
               exit 1
             }
 
+            touch $out
+          '';
+
+      # Eval-time check that cargo's per-unit flag table
+      # (src/cargo/core/compiler/lto.rs) lands in the generated build
+      # scripts for every crate type. The run tests above prove rustc
+      # accepts the combinations end-to-end.
+      ltoFlagTable =
+        let
+          crateWith =
+            args:
+            mkHostCrate (
+              {
+                crateName = "flagcheck";
+                src = mkLib "src/lib.rs";
+              }
+              // args
+            );
+          crateWithDefaultLto =
+            args:
+            mkCrate (buildRustCrate.override { defaultLto = "thin"; }) (
+              {
+                crateName = "flagcheck";
+                src = mkLib "src/lib.rs";
+              }
+              // args
+            );
+          libOpts = args: expected: lib.hasInfix ''LIB_LTO_OPTS="${expected}"'' (crateWith args).buildPhase;
+          binOpts = args: expected: lib.hasInfix ''BIN_LTO_OPTS="${expected}"'' (crateWith args).buildPhase;
+          testOpts =
+            args: expected: lib.hasInfix ''LIB_TEST_LTO_OPTS="${expected}"'' (crateWith args).buildPhase;
+          buildRsHasNoBitcode = args: lib.hasInfix "-C embed-bitcode=no" (crateWith args).configurePhase;
+          checks = {
+            binNull = binOpts { } "";
+            binFalse = binOpts { lto = false; } "-C embed-bitcode=no";
+            binTrue = binOpts { lto = true; } "-C lto";
+            binFat = binOpts { lto = "fat"; } "-C lto=fat";
+            binThin = binOpts { lto = "thin"; } "-C lto=thin";
+            binOff = binOpts { lto = "off"; } "-C lto=off -C embed-bitcode=no";
+            rlibNull = libOpts { } "";
+            # rlib dependencies keep object code and embedded bitcode (see
+            # build-crate.nix for why this diverges from cargo's
+            # bitcode-only rlibs).
+            rlibThin = libOpts { lto = "thin"; } "";
+            rlibFalse = libOpts { lto = false; } "-C embed-bitcode=no";
+            rlibOff = libOpts { lto = "off"; } "-C lto=off -C embed-bitcode=no";
+            staticlibFat = libOpts {
+              lto = "fat";
+              type = [ "staticlib" ];
+            } "-C lto=fat";
+            cdylibThin = libOpts {
+              lto = "thin";
+              type = [ "cdylib" ];
+            } "-C lto=thin";
+            dylibThin = libOpts {
+              lto = "thin";
+              type = [ "dylib" ];
+            } "-C embed-bitcode=no";
+            mixedThin = libOpts {
+              lto = "thin";
+              type = [
+                "rlib"
+                "cdylib"
+              ];
+            } "";
+            procMacroFat = libOpts {
+              lto = "fat";
+              procMacro = true;
+            } "-C embed-bitcode=no";
+            # "off" must not override the host treatment of proc macros:
+            # the proc-macro branch in ltoFlags is ordered before the
+            # off/false branches, like cargo's for_host check.
+            procMacroOff = libOpts {
+              lto = "off";
+              procMacro = true;
+            } "-C embed-bitcode=no";
+            # Lib test harnesses are bin units, except for proc-macro
+            # crates whose harness stays a host unit.
+            harnessThin = testOpts { lto = "thin"; } "-C lto=thin";
+            harnessProcMacroFat = testOpts {
+              lto = "fat";
+              procMacro = true;
+            } "-C embed-bitcode=no";
+            buildScriptThin = buildRsHasNoBitcode { lto = "thin"; };
+            buildScriptNull = !(buildRsHasNoBitcode { });
+            # defaultLto applies graph-wide via buildRustCrate.override,
+            # and an explicit per-crate `lto` takes precedence over it.
+            defaultLtoApplied =
+              lib.hasInfix ''BIN_LTO_OPTS="-C lto=thin"''
+                (crateWithDefaultLto { }).buildPhase;
+            defaultLtoPerCrateWins =
+              lib.hasInfix ''BIN_LTO_OPTS="-C lto=off -C embed-bitcode=no"''
+                (crateWithDefaultLto { lto = "off"; }).buildPhase;
+          };
+          failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
+        in
+        assert lib.assertMsg (failed == [ ]) "buildRustCrate LTO flag table mismatch: ${toString failed}";
+        runCommand "buildRustCrate-lto-flag-table" { } "touch $out";
+
+      # rustc runs the requested LTO while producing these artifacts.
+      ltoStaticlibOutputs = assertOutputs {
+        name = "lto-staticlib";
+        output = "lib";
+        crateArgs = {
+          lto = "fat";
+          libName = "lto_static";
+          type = [ "staticlib" ];
+          libPath = "src/lib.rs";
+          src = mkLib "src/lib.rs";
+        };
+        expectedFiles = [
+          "./nix-support/propagated-build-inputs"
+          "./lib/liblto_static.a"
+          "./lib/link"
+        ];
+      };
+
+      ltoCdylibOutputs = assertOutputs {
+        name = "lto-cdylib";
+        output = "lib";
+        crateArgs = {
+          lto = "thin";
+          libName = "lto_cdylib";
+          type = [ "cdylib" ];
+          libPath = "src/lib.rs";
+          src = mkLib "src/lib.rs";
+        };
+        expectedFiles = [
+          "./nix-support/propagated-build-inputs"
+          "./lib/liblto_cdylib${stdenv.hostPlatform.extensions.sharedLibrary}"
+          "./lib/link"
+        ];
+      };
+
+      # Unsupported values must be rejected at eval time.
+      ltoInvalidValueRejected =
+        let
+          result =
+            builtins.tryEval
+              (mkHostCrate {
+                crateName = "lto-invalid";
+                lto = "bogus";
+                src = mkLib "src/lib.rs";
+              }).drvPath;
+        in
+        assert lib.assertMsg (!result.success) "buildRustCrate accepted lto = \"bogus\"";
+        runCommand "buildRustCrate-lto-invalid-rejected" { } "touch $out";
+
+      # Prove the build_lib_test override really applies LTO flags to the
+      # test harness: fat LTO over a dependency whose bitcode was stripped
+      # (lto = false) must fail the harness link with a bitcode error. If
+      # the override were lost, the harness would link without LTO and the
+      # inner build would succeed, failing this test.
+      ltoTestHarnessRunsLto =
+        let
+          dep = mkHostCrate {
+            crateName = "stripped-dep";
+            lto = false;
+            src = mkLib "src/lib.rs";
+          };
+          crate = mkHostCrate {
+            crateName = "lto-harness-canary";
+            lto = "fat";
+            dependencies = [ dep ];
+            buildTests = true;
+            src = mkFile "src/lib.rs" ''
+              #[cfg(test)]
+              #[test]
+              fn uses_dep() {
+                  assert_eq!(stripped_dep::test(), 23);
+              }
+            '';
+          };
+          failed = testers.testBuildFailure crate;
+        in
+        runCommand "assert-ltoTestHarnessRunsLto" { inherit failed; } ''
+          grep -qi "bitcode" "$failed/testBuildFailure.log"
+          touch $out
+        '';
+    }
+    // lib.optionalAttrs (stdenv.hostPlatform.isElf && stdenv.hostPlatform == stdenv.buildPlatform) {
+      # The implementation relies on rustc's default of embedding bitcode
+      # in rlibs (cargo's ObjectAndBitcode state): inspect the section
+      # headers to pin that down, and prove `-C embed-bitcode=no` actually
+      # reaches rustc for the profiles that skip bitcode.
+      ltoBitcodeSections =
+        let
+          rlibWith =
+            name: args:
+            mkHostCrate (
+              {
+                crateName = name;
+                src = mkLib "src/lib.rs";
+              }
+              // args
+            );
+          rlibDefault = rlibWith "bitcode-default" { };
+          rlibThin = rlibWith "bitcode-thin" { lto = "thin"; };
+          rlibFalse = rlibWith "bitcode-false" { lto = false; };
+          rlibOff = rlibWith "bitcode-off" { lto = "off"; };
+        in
+        runCommand "buildRustCrate-lto-bitcode-sections"
+          {
+            nativeBuildInputs = [ buildPackages.binutils ];
+          }
+          ''
+            has_bitcode() {
+              local dir=$(mktemp -d)
+              (cd "$dir" && ar x "$1") || { echo "failed to extract $1" >&2; exit 1; }
+              local o found_obj=no
+              for o in "$dir"/*.o; do
+                found_obj=yes
+                if objdump -h "$o" 2>/dev/null | grep -qi llvmbc; then
+                  return 0
+                fi
+              done
+              # Guard against vacuously negative results: an rlib always
+              # contains at least one object member.
+              if [ "$found_obj" = no ]; then
+                echo "no object members extracted from $1" >&2
+                exit 1
+              fi
+              return 1
+            }
+
+            has_bitcode ${rlibDefault.lib}/lib/*.rlib || { echo "no bitcode in default rlib"; exit 1; }
+            has_bitcode ${rlibThin.lib}/lib/*.rlib || { echo "no bitcode in lto=thin rlib"; exit 1; }
+            ! has_bitcode ${rlibFalse.lib}/lib/*.rlib || { echo "unexpected bitcode in lto=false rlib"; exit 1; }
+            ! has_bitcode ${rlibOff.lib}/lib/*.rlib || { echo "unexpected bitcode in lto=off rlib"; exit 1; }
             touch $out
           '';
     }

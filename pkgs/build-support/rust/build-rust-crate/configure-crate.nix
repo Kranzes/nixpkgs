@@ -32,6 +32,7 @@
   capLints,
   libName,
   libPath,
+  lto,
   release,
   verbose,
   workspace_member,
@@ -40,9 +41,15 @@ let
   version_ = lib.splitString "-" crateVersion;
   versionPre = lib.optionalString (lib.tail version_ != [ ]) (lib.elemAt version_ 1);
   version = lib.splitVersion (lib.head version_);
-  rustcOpts = lib.foldl' (opts: opt: opts + " " + opt) (
-    if release then "-C opt-level=3" else "-C debuginfo=2"
-  ) ([ "-C codegen-units=${toString codegenUnits}" ] ++ extraRustcOptsForBuildRs);
+  rustcOpts =
+    lib.foldl' (opts: opt: opts + " " + opt) (if release then "-C opt-level=3" else "-C debuginfo=2")
+      (
+        [ "-C codegen-units=${toString codegenUnits}" ]
+        # Build scripts are host artifacts: cargo never LTOs them and skips
+        # their bitcode.
+        ++ lib.optional (lto != null) "-C embed-bitcode=no"
+        ++ extraRustcOptsForBuildRs
+      );
   buildDeps = mkRustcDepArgs buildDependencies crateRenames;
   authors = lib.concatStringsSep ":" crateAuthors;
   optLevel = if release then 3 else 0;

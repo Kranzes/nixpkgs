@@ -858,6 +858,51 @@ general. A number of other parameters can be overridden:
   (hello { }).override { release = false; }
   ```
 
+- Link-time optimization, mirroring Cargo's
+  [`profile.<name>.lto`](https://doc.rust-lang.org/cargo/reference/profiles.html#lto).
+  Accepted values are `false` (no cross-crate LTO, and skip embedding
+  bitcode in rlibs), `true` or `"fat"` (fat LTO), `"thin"` (thin LTO) and
+  `"off"` (disable LTO entirely). The default `null` emits no LTO-related
+  flags at all. The rustc flags each crate receives are derived from its
+  crate type, like in cargo: final artifacts (binaries, staticlibs,
+  cdylibs) run the requested LTO, rlib dependencies keep bitcode embedded
+  for the downstream LTO link, and host artifacts (proc macros, build
+  scripts) are never LTO'd.
+
+  Because dependency rlibs always keep object code alongside the
+  embedded bitcode (unlike cargo, which builds bitcode-only rlibs plus
+  separate host copies for build scripts and proc macros), enabling
+  `"fat"`, `"thin"` or `true` only changes how crates producing final
+  artifacts compile. Setting `lto` on just those crates — e.g. via
+  `crateOverrides` — is therefore usually all that is needed, and leaves
+  every dependency derivation untouched:
+
+  ```nix
+  (hello { }).override {
+    crateOverrides = defaultCrateOverrides // {
+      hello = attrs: { lto = "thin"; };
+    };
+  }
+  ```
+
+  To instead apply a setting to the whole dependency graph, as a Cargo
+  profile would, override the `buildRustCrate` used to build the crate
+  graph:
+
+  ```nix
+  pkgs.buildRustCrate.override { defaultLto = "thin"; }
+  ```
+
+  This rebuilds every crate, and is mainly useful for `false` (skip
+  bitcode everywhere, shrinking rlibs) and `"off"` (no LTO in any
+  compilation unit, not even rustc's local thin LTO), whose effects
+  live in the dependencies.
+
+  When overriding per crate, keep the graph consistent: a crate built
+  with `lto = "fat"`/`"thin"` cannot link dependencies built with
+  `lto = false` or `"off"`, since their rlibs have no bitcode left for
+  the LTO link.
+
 - Whether to print the commands sent to `rustc` when building
   (equivalent to `--verbose` in cargo:
 

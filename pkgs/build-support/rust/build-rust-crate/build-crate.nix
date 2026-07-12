@@ -27,9 +27,55 @@
   codegenUnits,
   capLints,
   useClippy,
+  lto,
 }:
 
 let
+  # rustc can only run LTO when every produced crate type supports it.
+  ltoAble =
+    ct:
+    lib.elem ct [
+      "bin"
+      "staticlib"
+      "cdylib"
+    ];
+
+  # LTO flags for one rustc invocation producing the given crate types,
+  # mirroring cargo's per-unit calculation in
+  # <https://github.com/rust-lang/cargo/blob/master/src/cargo/core/compiler/lto.rs>.
+  #
+  # One deliberate difference: cargo builds bitcode-only rlibs
+  # (`-C linker-plugin-lto`) for dependencies of an LTO build, compiling
+  # separate host copies for build scripts and proc macros. buildRustCrate
+  # shares one rlib per crate between target and host consumers, so rlibs
+  # keep object code next to the embedded bitcode (rustc's default, no
+  # flags) — cargo resolves the same conflict identically when a unit is
+  # shared between LTO and non-LTO roots.
+  ltoFlags =
+    crateTypes:
+    if lto == null then
+      [ ]
+    # Proc macros are host artifacts; cargo never LTOs those, and nothing
+    # reads their bitcode. Build scripts get the same treatment in
+    # configure-crate.nix.
+    else if lib.elem "proc-macro" crateTypes then
+      [ "-C embed-bitcode=no" ]
+    else if lto == "off" then
+      [
+        "-C lto=off"
+        "-C embed-bitcode=no"
+      ]
+    else if lto == false then
+      [ "-C embed-bitcode=no" ]
+    else if lib.all ltoAble crateTypes then
+      [ (if lto == true then "-C lto" else "-C lto=${lto}") ]
+    # rustc cannot LTO dylibs, so no consumer will read their bitcode.
+    else if lib.all (ct: ct == "dylib") crateTypes then
+      [ "-C embed-bitcode=no" ]
+    else
+      # rlib (possibly mixed with dylib/cdylib/staticlib): keep object
+      # code and embedded bitcode so both LTO and normal links work.
+      [ ];
   baseRustcOpts = [
     (if release then "-C opt-level=3" else "-C debuginfo=2")
     "-C codegen-units=${toString codegenUnits}"
@@ -113,6 +159,16 @@ in
   RUSTC_DRIVER="${if useClippy then "clippy-driver" else "rustc"}"
   LIB_RUSTC_OPTS="${libRustcOpts}"
   BIN_RUSTC_OPTS="${binRustcOpts}"
+  LIB_LTO_OPTS="${lib.concatStringsSep " " (ltoFlags crateType)}"
+  BIN_LTO_OPTS="${lib.concatStringsSep " " (ltoFlags [ "bin" ])}"
+  LIB_TEST_LTO_OPTS="${
+    # Lib test harnesses are executables, which cargo computes as bin
+    # units — except for proc-macro crates, whose harness stays a host
+    # unit (for_host takes precedence over the test-mode bin mapping).
+    lib.concatStringsSep " " (
+      ltoFlags (if lib.elem "proc-macro" crateType then crateType else [ "bin" ])
+    )
+  }"
   LIB_EXT="${stdenv.hostPlatform.extensions.library}"
   LIB_PATH="${libPath}"
   LIB_NAME="${libName}"
@@ -250,7 +306,7 @@ in
   ''}
 
   if [[ ''${#BINS[@]} -gt 0 ]]; then
-    export BIN_RUSTC_OPTS LINK EXTRA_LINK_ARGS EXTRA_LINK_ARGS_BINS EXTRA_LIB \
+    export BIN_RUSTC_OPTS BIN_LTO_OPTS LINK EXTRA_LINK_ARGS EXTRA_LINK_ARGS_BINS EXTRA_LIB \
            BUILD_OUT_DIR EXTRA_BUILD EXTRA_FEATURES EXTRA_RUSTC_FLAGS CAP_LINTS
     export -f build_bin build_bin_test echo_build_heading noisily echo_colored echo_error
     # Generate a Makefile and pipe it to make, which handles parallel execution

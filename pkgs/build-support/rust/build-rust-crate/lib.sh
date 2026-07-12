@@ -20,6 +20,7 @@ build_lib() {
     $EXTRA_LINK_ARGS \
     $EXTRA_LINK_ARGS_LIB \
     $LIB_RUSTC_OPTS \
+    $LIB_LTO_OPTS \
     $BUILD_OUT_DIR \
     $EXTRA_BUILD \
     $EXTRA_FEATURES \
@@ -47,6 +48,7 @@ build_bin() {
     $main_file \
     --crate-type bin \
     $BIN_RUSTC_OPTS \
+    $BIN_LTO_OPTS \
     --out-dir "$out_dir" \
     -L dependency=target/deps \
     $LINK \
@@ -71,7 +73,7 @@ build_bin() {
 
 build_lib_test() {
     local file="$1"
-    EXTRA_RUSTC_FLAGS="--test $EXTRA_RUSTC_FLAGS" build_lib "$1" "$2"
+    LIB_LTO_OPTS="$LIB_TEST_LTO_OPTS" EXTRA_RUSTC_FLAGS="--test $EXTRA_RUSTC_FLAGS" build_lib "$1" "$2"
 }
 
 build_bin_test() {
