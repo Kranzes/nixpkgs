@@ -194,6 +194,9 @@
               "file": "build-helpers/images/makediskimage.section.md"
             },
             {
+              "file": "build-helpers/images/mkrepartimage.section.md"
+            },
+            {
               "file": "build-helpers/images/binarycache.section.md"
             }
           ]

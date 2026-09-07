@@ -711,6 +711,8 @@ with pkgs;
   makeInitrdNG = callPackage ../build-support/kernel/make-initrd-ng.nix;
   makeInitrdNGTool = callPackage ../build-support/kernel/make-initrd-ng-tool.nix { };
 
+  mkRepartImage = callPackage ../build-support/mk-repart-image { };
+
   makeWrapper = makeShellWrapper;
 
   makeShellWrapper = makeSetupHook {

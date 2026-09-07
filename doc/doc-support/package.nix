@@ -5,6 +5,7 @@
   lib,
   stdenvNoCC,
   callPackage,
+  callPackages,
   devmode,
   mkShellNoCC,
   documentation-highlighter,
@@ -82,6 +83,7 @@ stdenvNoCC.mkDerivation (
       ln -s ${optionsJSON}/share/doc/nixos/options.json ./config-options.json
       ln -s ${treefmt.functionsDoc.markdown} ./packages/treefmt-functions.section.md
       ln -s ${treefmt.optionsDoc.optionsJSON}/share/doc/nixos/options.json ./treefmt-options.json
+      ln -s ${finalAttrs.finalPackage.mkRepartImageOptionsDoc.optionsJSON}/share/doc/nixos/options.json ./mkrepartimage-options.json
       ln -s ${docs.generic.meta-maintainers.optionsJSON}/share/doc/nixos/options.json ./options-modules-generic-meta-maintainers.json
     '';
 
@@ -152,6 +154,8 @@ stdenvNoCC.mkDerivation (
       epub = callPackage ./epub.nix { };
 
       optionsDoc = callPackage ./options-doc.nix { };
+
+      mkRepartImageOptionsDoc = callPackages ../../pkgs/build-support/mk-repart-image/options-doc.nix { };
 
       pythonInterpreterTable = callPackage ./python-interpreter-table.nix { };
 

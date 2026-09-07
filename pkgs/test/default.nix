@@ -222,6 +222,9 @@ in
   makeHardcodeGsettingsPatch = recurseIntoAttrs (callPackage ./make-hardcode-gsettings-patch { });
 
   makeWrapper = callPackage ./make-wrapper { };
+
+  mkRepartImage = callPackage ../build-support/mk-repart-image/tests.nix { };
+
   makeBinaryWrapper = callPackage ./make-binary-wrapper {
     makeBinaryWrapper = pkgs.makeBinaryWrapper.override {
       # Enable sanitizers in the tests only, to avoid the performance cost in regular usage.

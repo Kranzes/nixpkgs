@@ -120,6 +120,12 @@
   "ex-modularServiceCompliance-nixos": [
     "index.html#ex-modularServiceCompliance-nixos"
   ],
+  "ex-pkgs-mkRepartImage": [
+    "index.html#ex-pkgs-mkRepartImage"
+  ],
+  "ex-pkgs-mkRepartImage-override": [
+    "index.html#ex-pkgs-mkRepartImage-override"
+  ],
   "ex-pkgs-replace-vars": [
     "index.html#ex-pkgs-replace-vars",
     "index.html#ex-pkgs-substituteAll",
@@ -683,6 +689,12 @@
   ],
   "sec-pkg-overrideDerivation": [
     "index.html#sec-pkg-overrideDerivation"
+  ],
+  "sec-pkgs-mkRepartImage": [
+    "index.html#sec-pkgs-mkRepartImage"
+  ],
+  "sec-pkgs-mkRepartImage-options": [
+    "index.html#sec-pkgs-mkRepartImage-options"
   ],
   "sec-platform-breakdown": [
     "index.html#sec-platform-breakdown"
