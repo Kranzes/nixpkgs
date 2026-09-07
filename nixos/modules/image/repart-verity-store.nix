@@ -43,45 +43,58 @@ let
       );
 in
 {
-  options.image.repart.verityStore = {
-    enable = lib.mkEnableOption "building images with a dm-verity protected nix store";
+  options.image.repart = lib.mkOption {
+    type = lib.types.submoduleWith {
+      class = "repartImage";
+      modules = [
+        {
+          _file = "${toString ./repart-verity-store.nix}";
 
-    ukiPath = lib.mkOption {
-      type = lib.types.str;
-      default = "/EFI/Linux/${config.system.boot.loader.ukiFile}";
-      defaultText = "/EFI/Linux/\${config.system.boot.loader.ukiFile}";
-      description = ''
-        Specify the location on the ESP where the UKI is placed.
-      '';
-    };
+          options.verityStore = {
+            enable = lib.mkEnableOption "building images with a dm-verity protected nix store";
 
-    partitionIds = {
-      esp = lib.mkOption {
-        type = lib.types.str;
-        default = "00-esp";
-        description = ''
-          Specify the attribute name of the ESP.
-        '';
-      };
-      store-verity = lib.mkOption {
-        type = lib.types.str;
-        default = "10-store-verity";
-        description = ''
-          Specify the attribute name of the store's dm-verity hash partition.
-        '';
-      };
-      store = lib.mkOption {
-        type = lib.types.str;
-        default = "20-store";
-        description = ''
-          Specify the attribute name of the store partition.
-        '';
-      };
+            ukiPath = lib.mkOption {
+              type = lib.types.str;
+              default = "/EFI/Linux/${config.system.boot.loader.ukiFile}";
+              defaultText = "/EFI/Linux/\${config.system.boot.loader.ukiFile}";
+              description = ''
+                Specify the location on the ESP where the UKI is placed.
+              '';
+            };
+
+            partitionIds = {
+              esp = lib.mkOption {
+                type = lib.types.str;
+                default = "00-esp";
+                description = ''
+                  Specify the attribute name of the ESP.
+                '';
+              };
+              store-verity = lib.mkOption {
+                type = lib.types.str;
+                default = "10-store-verity";
+                description = ''
+                  Specify the attribute name of the store's dm-verity hash partition.
+                '';
+              };
+              store = lib.mkOption {
+                type = lib.types.str;
+                default = "20-store";
+                description = ''
+                  Specify the attribute name of the store partition.
+                '';
+              };
+            };
+          };
+        }
+      ];
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    boot.initrd = {
+  # mkIf on the whole config would read cfg.enable while image.repart is
+  # still being merged, so the condition goes on each attribute instead.
+  config = {
+    boot.initrd = lib.mkIf cfg.enable {
       systemd.dmVerity.enable = true;
       supportedFilesystems = {
         ${config.image.repart.partitions.${cfg.partitionIds.store}.repartConfig.Format} =
@@ -89,13 +102,15 @@ in
       };
     };
 
-    fileSystems."/nix/store" = lib.mkDefault {
-      device = "/usr/nix/store";
-      fsType = "none";
-      options = [ "bind" ];
-    };
+    fileSystems."/nix/store" = lib.mkIf cfg.enable (
+      lib.mkDefault {
+        device = "/usr/nix/store";
+        fsType = "none";
+        options = [ "bind" ];
+      }
+    );
 
-    image.repart.partitions = {
+    image.repart.partitions = lib.mkIf cfg.enable {
       # dm-verity hash partition
       ${cfg.partitionIds.store-verity}.repartConfig = {
         Type = lib.mkDefault partitionTypes.usr-verity;
@@ -119,28 +134,30 @@ in
 
     };
 
-    system.build = {
+    system.build = lib.mkIf cfg.enable {
       finalImage = lib.warn "system.build.finalImage has been renamed to system.build.image" config.system.build.image;
 
       # intermediate system image without ESP
       intermediateImage =
-        (config.image.repart.image.override {
-          # always disable compression for the intermediate image
-          compression.enable = false;
-        }).overrideAttrs
-          (
-            _: previousAttrs: {
-              # make it easier to identify the intermediate image in build logs
-              name =
-                if previousAttrs ? pname then
-                  "${previousAttrs.pname}-${previousAttrs.version}-intermediate"
-                else
-                  "${previousAttrs.name}-intermediate";
-
-              # do not prepare the ESP, this is done in the final image
-              systemdRepartFlags = previousAttrs.systemdRepartFlags ++ [ "--defer-partitions=esp" ];
+        (config.image.repart.image.extendModules {
+          modules = [
+            {
+              # always disable compression for the intermediate image
+              compression.enable = lib.mkForce false;
             }
-          );
+          ];
+        }).config.image.overrideAttrs
+          (previousAttrs: {
+            # make it easier to identify the intermediate image in build logs
+            name =
+              if previousAttrs ? pname then
+                "${previousAttrs.pname}-${previousAttrs.version}-intermediate"
+              else
+                "${previousAttrs.name}-intermediate";
+
+            # do not prepare the ESP, this is done in the final image
+            systemdRepartFlags = previousAttrs.systemdRepartFlags ++ [ "--defer-partitions=esp" ];
+          });
 
       # UKI with embedded usrhash from intermediateImage
       uki =
@@ -176,60 +193,60 @@ in
 
       # final system image that is created from the intermediate image by injecting the UKI from above
       image = lib.mkOverride 99 (
-        (config.image.repart.image.override {
-          # continue building with existing intermediate image
-          createEmpty = false;
-        }).overrideAttrs
-          (
-            finalAttrs: previousAttrs: {
+        (config.image.repart.image.extendModules {
+          modules = [
+            {
+              # continue building with existing intermediate image
+              createEmpty = lib.mkForce false;
+
               # add entry to inject UKI into ESP
-              finalPartitions = lib.recursiveUpdate previousAttrs.finalPartitions {
-                ${cfg.partitionIds.esp}.contents = {
-                  "${cfg.ukiPath}".source = "${config.system.build.uki}/${config.system.boot.loader.ukiFile}";
-                };
+              partitions.${cfg.partitionIds.esp}.contents = {
+                "${cfg.ukiPath}".source = "${config.system.build.uki}/${config.system.boot.loader.ukiFile}";
               };
-
-              nativeBuildInputs = previousAttrs.nativeBuildInputs ++ [
-                pkgs.buildPackages.systemdUkify
-                verityHashCheck
-                pkgs.buildPackages.jq
-              ];
-
-              preBuild = ''
-                # check that we build the final image with the same intermediate image for
-                # which the injected UKI was built by comparing the UKI cmdline with the repart output
-                # of the intermediate image
-                #
-                # This is necessary to notice incompatible substitutions of
-                # non-reproducible store paths, for example when working with distributed
-                # builds, or when offline-signing the UKI.
-                ukify --json=short inspect ${config.system.build.uki}/${config.system.boot.loader.ukiFile} \
-                  | assert_uki_repart_match.py "${config.system.build.intermediateImage}/repart-output.json"
-
-                # copy the uncompressed intermediate image, so that systemd-repart picks it up
-                cp -v ${config.system.build.intermediateImage}/${config.image.baseName}.raw .
-                chmod +w ${config.image.baseName}.raw
-              '';
-
-              # replace "TBD" with the original roothash values
-              preInstall = ''
-                mv -v repart-output{.json,_orig.json}
-
-                jq --slurp --indent -1 \
-                  '.[0] as $intermediate | .[1] as $final
-                    | $intermediate | map(select(.roothash != null) | { "uuid":.uuid,"roothash":.roothash }) as $uuids
-                    | $final + $uuids
-                    | group_by(.uuid)
-                    | map(add)
-                    | sort_by(.offset)' \
-                      ${config.system.build.intermediateImage}/repart-output.json \
-                      repart-output_orig.json \
-                  > repart-output.json
-
-                rm -v repart-output_orig.json
-              '';
             }
-          )
+          ];
+        }).config.image.overrideAttrs
+          (previousAttrs: {
+            nativeBuildInputs = previousAttrs.nativeBuildInputs ++ [
+              pkgs.buildPackages.systemdUkify
+              verityHashCheck
+              pkgs.buildPackages.jq
+            ];
+
+            preBuild = ''
+              # check that we build the final image with the same intermediate image for
+              # which the injected UKI was built by comparing the UKI cmdline with the repart output
+              # of the intermediate image
+              #
+              # This is necessary to notice incompatible substitutions of
+              # non-reproducible store paths, for example when working with distributed
+              # builds, or when offline-signing the UKI.
+              ukify --json=short inspect ${config.system.build.uki}/${config.system.boot.loader.ukiFile} \
+                | assert_uki_repart_match.py "${config.system.build.intermediateImage}/repart-output.json"
+
+              # copy the uncompressed intermediate image, so that systemd-repart picks it up
+              cp -v ${config.system.build.intermediateImage}/${config.image.baseName}.raw .
+              chmod +w ${config.image.baseName}.raw
+            '';
+
+            # replace "TBD" with the original roothash values
+            preInstall = ''
+              mv -v repart-output{.json,_orig.json}
+
+              jq --slurp --indent -1 \
+                '.[0] as $intermediate | .[1] as $final
+                  | $intermediate | map(select(.roothash != null) | { "uuid":.uuid,"roothash":.roothash }) as $uuids
+                  | $final + $uuids
+                  | group_by(.uuid)
+                  | map(add)
+                  | sort_by(.offset)' \
+                    ${config.system.build.intermediateImage}/repart-output.json \
+                    repart-output_orig.json \
+                > repart-output.json
+
+              rm -v repart-output_orig.json
+            '';
+          })
       );
     };
   };

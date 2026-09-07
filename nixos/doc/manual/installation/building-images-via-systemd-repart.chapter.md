@@ -6,6 +6,9 @@ images and exposes it's entire interface via the `repartConfig` option.
 
 [image/repart.nix]: https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/image/repart.nix
 
+The module builds the image with `pkgs.mkRepartImage`. You can also call it
+directly. The [Nixpkgs manual](https://nixos.org/manual/nixpkgs/unstable/#sec-pkgs-mkRepartImage) documents its options.
+
 An example of how to build an image:
 
 ```nix
@@ -23,6 +26,7 @@ An example of how to build an image:
         };
         repartConfig = {
           Type = "esp";
+          Format = "vfat";
           # ...
         };
       };
@@ -30,7 +34,9 @@ An example of how to build an image:
         storePaths = [ config.system.build.toplevel ];
         repartConfig = {
           Type = "root";
+          Format = "ext4";
           Label = "nixos";
+          Minimize = "guess";
           # ...
         };
       };
@@ -55,7 +61,10 @@ that `/nix/store` is stripped from the paths before copying them into the image.
 
 ```nix
 {
-  fileSystems."/nix/store".device = "/dev/disk/by-partlabel/nix-store";
+  fileSystems."/nix/store" = {
+    device = "/dev/disk/by-partlabel/nix-store";
+    fsType = "erofs";
+  };
 
   image.repart.partitions = {
     "store" = {
@@ -63,7 +72,9 @@ that `/nix/store` is stripped from the paths before copying them into the image.
       nixStorePrefix = "/";
       repartConfig = {
         Type = "linux-generic";
+        Format = "erofs";
         Label = "nix-store";
+        Minimize = "best";
         # ...
       };
     };
@@ -100,6 +111,7 @@ Nix store and mount it on `/nix/store`:
         Format = "btrfs";
         Subvolumes = "/@ /@nix-store";
         MakeDirectories = "/@ /@nix-store";
+        Minimize = "best";
         # ...
       };
     };
@@ -126,57 +138,53 @@ this system. Furthermore, it uses a [Unified Kernel Image][unified-kernel-image]
 [unified-kernel-image]: https://uapi-group.org/specifications/specs/unified_kernel_image/
 
 ```nix
+{ pkgs, ... }:
 let
-  pkgs = import <nixpkgs> { };
-  efiArch = pkgs.stdenv.hostPlatform.efiArch;
+  inherit (pkgs.stdenv.hostPlatform) efiArch;
 in
-(pkgs.nixos [
-  (
-    {
-      config,
-      lib,
-      pkgs,
-      modulesPath,
-      ...
-    }:
-    {
+(pkgs.nixos (
+  {
+    config,
+    lib,
+    modulesPath,
+    ...
+  }:
+  {
+    imports = [ "${modulesPath}/image/repart.nix" ];
 
-      imports = [ "${modulesPath}/image/repart.nix" ];
+    fileSystems."/" = {
+      device = "/dev/disk/by-label/nixos";
+      fsType = "ext4";
+    };
+    boot.loader.grub.enable = false;
 
-      boot.loader.grub.enable = false;
-
-      fileSystems."/".device = "/dev/disk/by-label/nixos";
-
-      image.repart = {
-        name = "image";
-        partitions = {
-          "esp" = {
-            contents = {
-              "/EFI/BOOT/BOOT${lib.toUpper efiArch}.EFI".source =
-                "${pkgs.systemd}/lib/systemd/boot/efi/systemd-boot${efiArch}.efi";
-
-              "/EFI/Linux/${config.system.boot.loader.ukiFile}".source =
-                "${config.system.build.uki}/${config.system.boot.loader.ukiFile}";
-            };
-            repartConfig = {
-              Type = "esp";
-              Format = "vfat";
-              SizeMinBytes = "96M";
-            };
+    image.repart = {
+      name = "image";
+      partitions = {
+        "esp" = {
+          contents = {
+            "/EFI/BOOT/BOOT${lib.toUpper efiArch}.EFI".source =
+              "${config.systemd.package}/lib/systemd/boot/efi/systemd-boot${efiArch}.efi";
+            "/EFI/Linux/${config.system.boot.loader.ukiFile}".source =
+              "${config.system.build.uki}/${config.system.boot.loader.ukiFile}";
           };
-          "root" = {
-            storePaths = [ config.system.build.toplevel ];
-            repartConfig = {
-              Type = "root";
-              Format = "ext4";
-              Label = "nixos";
-              Minimize = "guess";
-            };
+          repartConfig = {
+            Type = "esp";
+            Format = "vfat";
+            SizeMinBytes = "96M";
+          };
+        };
+        "root" = {
+          storePaths = [ config.system.build.toplevel ];
+          repartConfig = {
+            Type = "root";
+            Format = "ext4";
+            Label = "nixos";
+            Minimize = "guess";
           };
         };
       };
-
-    }
-  )
-]).image
+    };
+  }
+)).image
 ```
