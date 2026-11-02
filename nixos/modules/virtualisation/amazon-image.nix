@@ -57,7 +57,11 @@ in
     boot.extraModulePackages = [
       config.boot.kernelPackages.ena
     ];
-    boot.initrd.availableKernelModules = [ "nvme" ];
+    boot.initrd.availableKernelModules = [
+      "nvme"
+    ]
+    # Root disk on Xen instance types, such as t2.
+    ++ lib.optional pkgs.stdenv.hostPlatform.isx86 "xen-blkfront";
     boot.kernelParams =
       let
         # Amazon recommends setting this to the highest possible value for a good EBS
