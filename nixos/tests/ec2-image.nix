@@ -194,8 +194,11 @@ in
               + f" -netdev 'user,id=ec2meta,net=169.0.0.0/8,guestfwd=tcp:169.254.169.254:80-cmd:${lib.getExe imdsServer} {metadata_dir}'"
           )
 
+          # The BIOS boot of the same image is covered by nixosTests.ec2-nixops.
           start_command = (
               f"{QEMU}/bin/qemu-kvm -m 1024"
+              + " -drive if=pflash,format=raw,unit=0,readonly=on,file=${hostPkgs.OVMF.firmware}"
+              + " -drive if=pflash,format=raw,unit=1,readonly=on,file=${hostPkgs.OVMF.variables}"
               + f" -drive file={disk_image},if=virtio,werror=report"
               + vlan_net
               + metadata_net
@@ -295,6 +298,7 @@ in
               assert "Hello from test-instance" in ssh_result, f"Unexpected SSH result: {ssh_result}"
 
           with subtest("Basic EC2 functionality"):
+              machine.succeed("test -d /sys/firmware/efi")
               machine.succeed("findmnt / -o SIZE -n | grep -E '[0-9]+G'")
 
           with subtest("Decompression of gzip-compressed user-data"):
